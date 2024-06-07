@@ -1,0 +1,30 @@
+declare_args() {
+  # Default to warnings as errors for default workflow, where we catch
+  # warnings with known toolchains. Allow overriding this e.g. for Chromium
+  # builds on Linux that could use a different version of the compiler.
+  # With GCC, warnings in no-Chromium code are always not treated as errors.
+  treat_warnings_as_errors = true
+
+  # How many symbols to include in the build. This affects the performance of
+  # the build since the symbols are large and dealing with them is slow.
+  #   2 means regular build with symbols.
+  #   1 means minimal symbols, usually enough for backtraces only. Symbols with
+  # internal linkage (static functions or those in anonymous namespaces) may not
+  # appear when using this level.
+  #   0 means no symbols.
+  #   -1 means auto-set according to debug/release and platform.
+  symbol_level = -1
+}
+
+# If it wasn't manually set, set to an appropriate default.
+assert(symbol_level >= -1 && symbol_level <= 2, "Invalid symbol_level")
+if (symbol_level == -1) {
+  if (is_debug) {
+    # Linux builds slower by having symbols as part of the target binary,
+    # whereas Mac and Windows have them separate, so in Release Linux, default
+    # them off, but keep them on for Official builds and Chromecast builds.
+    symbol_level = 2
+  } else {
+    symbol_level = 0
+  }
+}

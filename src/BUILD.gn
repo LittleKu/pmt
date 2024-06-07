@@ -1,0 +1,34 @@
+shared_library("shared") {
+  sources = [
+    "library/shared_library.cc",
+    "library/shared_library.h",
+  ]
+
+  defines = [ "SHARED_IMPLEMENTATION=1" ]
+}
+
+static_library("static") {
+  sources = [
+    "library/static_library.cc",
+    "library/static_library.h",
+  ]
+}
+
+executable("console") {
+  sources = [ "program/main.cc" ]
+  defines = [ "CONSOLE_APP" ]
+  deps = [ ":shared" ]
+}
+
+executable("windowed") {
+  sources = [ "program/main.cc" ]
+  if (!defined(configs)) {
+    configs = []
+  }
+
+  # console is default, we need to remove it
+  configs -= [ "//build/config/win:console" ]
+  configs += [ "//build/config/win:windowed" ]
+
+  deps = [ ":static" ]
+}

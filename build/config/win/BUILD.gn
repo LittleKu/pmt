@@ -1,0 +1,246 @@
+assert(is_win)
+
+declare_args() {
+  # Turn this on to have the linker output extra timing information.
+  win_linker_timing = false
+
+  # possible values for target_winuwp_version:
+  #   "10" - Windows UWP 10
+  #   "8.1" - Windows RT 8.1
+  #   "8.0" - Windows RT 8.0
+  target_winuwp_version = "10"
+
+  # possible values:
+  #   "app" - Windows Store Applications
+  #   "phone" - Windows Phone Applications
+  #   "system" - Windows Drivers and Tools
+  #   "server" - Windows Server Applications
+  #   "desktop" - Windows Desktop Applications
+  target_winuwp_family = "app"
+
+  # Indicates whether to use /pdbpagesize:8192 to allow PDBs larger than 4 GiB.
+  use_large_pdbs = true
+}
+
+config("pdb_large_than_4gb") {
+  if (!defined(ldflags)) {
+    ldflags = []
+  }
+  ldflags += [ "/pdbpagesize:8192" ]
+}
+
+config("compiler") {
+  if (current_cpu == "x86") {
+    asmflags = [ "/safeseh" ]
+  }
+
+  cflags = [
+    "/Gy",  # Enable function-level linking.
+    "/FS",  #Preserve previous PDB behavior.
+    "/bigobj",  # Some of our files are bigger than the regular limits.
+    "/utf-8",  # Assume UTF-8 by default so avoid code page dependencies.
+  ]
+
+  cflags_c = [ "/TC" ]
+  cflags_cc = [ "/TP" ]
+
+  cflags += [ "/Zc:sizedDealloc-" ]
+
+  ldflags = []
+
+  if (use_large_pdbs) {
+    if (!defined(configs)) {
+      configs = []
+    }
+    configs += [ ":pdb_large_than_4gb" ]
+  }
+
+  if (!is_debug) {
+    ldflags += [
+      "/OPT:REF",
+      "/OPT:ICF",
+      "/INCREMENTAL:NO",
+      "/FIXED:NO",
+      "/PROFILE",
+    ]
+  }
+
+  arflags = [ "/ignore:4221" ]
+}
+
+config("runtime_library") {
+  cflags = []
+  cflags_cc = []
+
+  # Defines that set up the CRT.
+  defines = [
+    "__STD_C",
+    "_CRT_RAND_S",
+    "_CRT_SECURE_NO_DEPRECATE",
+    "_SCL_SECURE_NO_DEPRECATE",
+  ]
+
+  # Defines that set up the Windows SDK.
+  defines += [
+    "_ATL_NO_OPENGL",
+    "_WINDOWS",
+    "CERT_CHAIN_PARA_HAS_EXTRA_FIELDS",
+    "PSAPI_VERSION=2",
+    "WIN32",
+    "_SECURE_ATL",
+  ]
+
+  if (current_os == "winuwp") {
+    # When targeting Windows Runtime, certain compiler/linker flags are
+    # necessary.
+    defines += [
+      "WINUWP",
+      "__WRL_NO_DEFAULT_LIB__",
+    ]
+    if (target_winuwp_family == "app") {
+      defines += [ "WINAPI_FAMILY=WINAPI_FAMILY_PC_APP" ]
+    } else if (target_winuwp_family == "phone") {
+      defines += [ "WINAPI_FAMILY=WINAPI_FAMILY_PHONE_APP" ]
+    } else if (target_winuwp_family == "system") {
+      defines += [ "WINAPI_FAMILY=WINAPI_FAMILY_SYSTEM" ]
+    } else if (target_winuwp_family == "server") {
+      defines += [ "WINAPI_FAMILY=WINAPI_FAMILY_SERVER" ]
+    } else {
+      defines += [ "WINAPI_FAMILY=WINAPI_FAMILY_DESKTOP_APP" ]
+    }
+    cflags_cc += [ "/EHsc" ]
+
+    # This warning is given because the linker cannot tell the difference
+    # between consuming WinRT APIs versus authoring WinRT within static
+    # libraries as such this warning is always given by the linker. Since
+    # consuming WinRT APIs within a library is legitimate but authoring
+    # WinRT APis is not allowed, this warning is disabled to ignore the
+    # legitimate consumption of WinRT APIs within static library builds.
+    arflags = [ "/IGNORE:4264" ]
+
+    if (target_winuwp_version == "10") {
+      defines += [ "WIN10=_WIN32_WINNT_WIN10" ]
+    } else if (target_winuwp_version == "8.1") {
+      defines += [ "WIN8_1=_WIN32_WINNT_WINBLUE" ]
+    } else if (target_winuwp_version == "8.0") {
+      defines += [ "WIN8=_WIN32_WINNT_WIN8" ]
+    }
+  } else {
+    # When not targeting Windows Runtime, make sure the WINAPI family is set
+    # to desktop.
+    defines += [ "WINAPI_FAMILY=WINAPI_FAMILY_DESKTOP_APP" ]
+  }
+}
+
+config("winver") {
+  defines = [
+    "NTDDI_VERSION=NTDDI_WIN10_NI",
+
+    # We can't say `=_WIN32_WINNT_WIN10` here because some files do
+    # `#if WINVER < 0x0600` without including windows.h before,
+    # and then _WIN32_WINNT_WIN10 isn't yet known to be 0x0A00.
+    "_WIN32_WINNT=0x0A00",
+    "WINVER=0x0A00",
+  ]
+}
+
+config("sdk_link") {
+  if (current_cpu == "x86") {
+    ldflags = [
+      "/SAFESEH",  # Not compatible with x64 so use only for x86.
+      "/largeaddressaware",
+    ]
+  }
+}
+
+config("common_linker_setup") {
+  ldflags = [
+    "/FIXED:NO",
+    "/ignore:4199",
+    "/ignore:4221",
+    "/NXCOMPAT",
+    "/DYNAMICBASE",
+  ]
+
+  if (win_linker_timing) {
+    ldflags += [
+      "/time",
+      "/verbose:incr",
+    ]
+  }
+}
+
+config("default_crt") {
+  if (current_os == "winuwp") {
+    configs = [ ":dynamic_crt" ]
+  } else {
+    configs = [ ":static_crt" ]
+  }
+}
+
+config("release_crt") {
+  cflags = [ "/MT" ]
+}
+
+config("dynamic_crt") {
+  if (is_debug) {
+    cflags = [ "/MDd" ]
+  } else {
+    cflags = [ "/MD" ]
+  }
+}
+
+config("static_crt") {
+  if (is_debug) {
+    cflags = [ "/MTd" ]
+  } else {
+    cflags = [ "/MT" ]
+  }
+}
+
+# This is appended to the subsystem to specify a minimum version.
+if (current_cpu == "x64") {
+  # The number after the comma is the minimum required OS version.
+  # 5.02 = Windows Server 2003.
+  subsystem_version_suffix = ",5.02"
+} else if (current_cpu == "arm64") {
+  # Windows ARM64 requires Windows 10.
+  subsystem_version_suffix = ",10.0"
+} else {
+  # 5.01 = Windows XP.
+  subsystem_version_suffix = ",5.01"
+}
+
+config("console") {
+  ldflags = [ "/SUBSYSTEM:CONSOLE$subsystem_version_suffix" ]
+}
+config("windowed") {
+  ldflags = [ "/SUBSYSTEM:WINDOWS$subsystem_version_suffix" ]
+}
+
+# Applies incremental linking or not depending on the current configuration.
+config("default_incremental_linking") {
+  # Enable incremental linking for debug builds and all component builds - any
+  # builds where performance is not job one.
+  # TODO(thakis): Always turn this on with lld, no reason not to.
+  if (is_debug) {
+    ldflags = [ "/INCREMENTAL" ]
+  } else {
+    ldflags = [ "/INCREMENTAL:NO" ]
+  }
+}
+
+config("unicode") {
+  defines = [
+    "_UNICODE",
+    "UNICODE",
+  ]
+}
+
+config("lean_and_mean") {
+  defines = [ "WIN32_LEAN_AND_MEAN" ]
+}
+
+config("nominmax") {
+  defines = [ "NOMINMAX" ]
+}

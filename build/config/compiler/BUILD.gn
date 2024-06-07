@@ -1,0 +1,267 @@
+import("//build/config/compiler/compiler.gni")
+
+declare_args() {
+  # Enable fatal linker warnings. Building Chromium with certain versions
+  # of binutils can cause linker warning.
+  fatal_linker_warnings = true
+
+  # Override this to put full paths to PDBs in Windows PE files. This helps
+  # windbg and Windows Performance Analyzer with finding the PDBs in some local-
+  # build scenarios. This is never needed for bots or official builds. Because
+  # this puts the output directory in the DLLs/EXEs it breaks build determinism.
+  # Bugs have been reported to the windbg/WPA teams and this workaround will be
+  # removed when they are fixed.
+  use_full_pdb_paths = false
+
+  # Allow projects that wish to stay on C++17 to override the default(C++14)
+  use_cxx17 = false
+}
+
+config("compiler_deterministic") {
+  cflags = []
+  ldflags = []
+  swiftflags = []
+
+  if (is_win) {
+    cflags += [
+      "/wd4117",
+      "/D__DATE__=",
+      "/D__TIME__=",
+      "/D__TIMESTAMP__=",
+    ]
+  }
+}
+
+config("default_include_dirs") {
+  include_dirs = [
+    "//",
+    "root_gen_dir",
+  ]
+}
+
+config("compiler") {
+  asmflags = []
+  cflags = []
+  cflags_c = []
+  cflags_cc = []
+  cflags_objc = []
+  cflags_objcc = []
+  ldflags = []
+  defines = []
+  configs = []
+
+  # TODO: add linux and mac support
+  if (is_win) {
+    configs += [ "//build/config/win:compiler" ]
+  }
+
+  configs += [ ":compiler_deterministic" ]
+
+  #TODO: add linux and mac support
+  if (is_win) {
+    cflags_c += [ "/std:c11" ]
+    if (use_cxx17) {
+      cflags_cc += [ "/std:c++17" ]
+    } else {
+      cflags_cc += [ "/std:c++14" ]
+    }
+  }
+
+  cflags_objc += cflags_c
+  cflags_objcc += cflags_cc
+}
+
+config("runtime_library") {
+  configs = []
+  if (is_win) {
+    configs += [ "//build/config/win:runtime_library" ]
+  }
+}
+
+config("default_warnings") {
+  cflags = []
+  cflags_c = []
+  cflags_cc = []
+  ldflags = []
+
+  if (is_win) {
+    if (treat_warnings_as_errors) {
+      cflags += [ "/WX" ]
+    }
+    if (fatal_linker_warnings) {
+      arflags = [ "/WX" ]
+      ldflags = [ "/WX" ]
+    }
+    defines = [
+      # Without this, Windows headers warn that functions like wcsnicmp
+      # should be spelled _wcsnicmp. But all other platforms keep spelling
+      # it wcsnicmp, making this warning unhelpful. We don't want it.
+      "_CRT_NONSTDC_NO_WARNINGS",
+
+      # TODO(thakis): winsock wants us to use getaddrinfo instead of
+      # gethostbyname. Fires mostly in non-Chromium code. We probably
+      # want to remove this define eventually.
+      "_WINSOCK_DEPRECATED_NO_WARNINGS",
+    ]
+    # if (!is_clang) {
+      # TODO(thakis): Remove this once
+      # https://swiftshader-review.googlesource.com/c/SwiftShader/+/57968 has
+      # rolled into angle.
+      cflags += [ "/wd4244" ]
+    # }
+  }
+}
+
+config("no_chromium_code") {
+  cflags = []
+  cflags_cc = []
+  defines = []
+
+  if (is_win) {
+    cflags += [
+      "/wd4800",  # Disable warning when forcing value to bool.
+      "/wd4267",  # TODO(jschuh): size_t to int.
+    ]
+  }
+
+  # Suppress all warnings in third party, as Cargo does:
+  # https://doc.rust-lang.org/rustc/lints/levels.html#capping-lints
+  rustflags = [ "--cap-lints=allow" ]
+
+  configs = [ ":default_warnings" ]
+}
+
+config("no_optimize") {
+  if (is_win) {
+    cflags = [
+      "/Od",
+      "/Ob0",
+      "/GF",
+    ]
+
+    if (target_cpu == "arm64") {
+      cflags += [ "/Oy-" ]
+    }
+  }
+}
+
+if (is_win) {
+  common_optimize_on_cflags = [
+    "/Ob2",
+    "/Oy-",
+    "/Zc:inline",
+  ]
+
+  common_optimize_on_ldflags = []
+
+  if (!is_debug) {
+    common_optimize_on_ldflags += [ "/OPT:ICF" ]
+  }
+}
+
+config("optimize") {
+  if (is_win) {
+    cflags = [ "/O2" ] + common_optimize_on_cflags + [ "/Oi" ]
+
+    rustflags = []
+  }
+  ldflags = common_optimize_on_ldflags
+}
+
+config("default_optimization") {
+  if (is_debug) {
+    configs = [ ":no_optimize" ]
+  } else {
+    configs = [ ":optimize" ]
+  }
+}
+
+config("rtti") {
+  if (is_win) {
+    cflags_cc = [ "/GR" ]
+  }
+}
+
+config("no_rtti") {
+  if (is_win) {
+    cflags_cc = [ "/GR-" ]
+  }
+}
+
+config("exceptions") {
+  if (is_win) {
+    defines = [ "_HAS_EXCEPTIONS=1" ]
+    cflags_cc = [ "/EHsc" ]
+  }
+}
+
+config("no_exceptions") {
+  if (is_win) {
+    defines = [ "_HAS_EXCEPTIONS=0" ]
+  }
+}
+
+config("win_pdbaltpath") {
+  visibility = [
+    ":minimal_symbols",
+    ":symbols",
+  ]
+
+  # /DEBUG causes the linker to generate a pdb file, and to write the absolute
+  # path to it in the executable file it generates.  This flag turns that
+  # absolute path into just the basename of the pdb file, which helps with
+  # build reproducibility. Debuggers look for pdb files next to executables,
+  # so there's minimal downside to always using this. However, post-mortem
+  # debugging of Chromium crash dumps and ETW tracing can be complicated by this
+  # switch so an option to omit it is important.
+  if (!use_full_pdb_paths) {
+    ldflags = [ "/pdbaltpath:%_PDB%" ]
+  }
+}
+
+config("symbols") {
+  if (is_win) {
+    cflags = [ "/Zi" ]  # Produce PDB file, no edit and continue.
+
+    ldflags = [ "/DEBUG" ]
+
+    # All configs using /DEBUG should include this:
+    configs = [ ":win_pdbaltpath" ]
+  }
+
+  configs = []
+
+  rustflags = [ "-g" ]
+}
+
+config("minimal_symbols") {
+  if (is_win) {
+    cflags = []
+
+    ldflags = [ "/DEBUG" ]
+
+    # All configs using /DEBUG should include this:
+    configs = [ ":win_pdbaltpath" ]
+  }
+  rustflags = [ "-Cdebuginfo=1" ]
+}
+
+config("no_symbols") {
+  if (is_win) {
+    ldflags = [ "/DEBUG" ]
+
+    configs = [ ":win_pdbaltpath" ]
+  }
+}
+
+config("default_symbols") {
+  if (symbol_level == 0) {
+    configs = [ ":no_symbols" ]
+  } else if (symbol_level == 1) {
+    configs = [ ":minimal_symbols" ]
+  } else if (symbol_level == 2) {
+    configs = [ ":symbols" ]
+  } else {
+    assert(false)
+  }
+}
